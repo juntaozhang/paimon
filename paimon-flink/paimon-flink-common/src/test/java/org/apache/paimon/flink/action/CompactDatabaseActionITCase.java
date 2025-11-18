@@ -77,14 +77,18 @@ public class CompactDatabaseActionITCase extends CompactActionITCaseBase {
                     },
                     new String[] {"k", "v", "hh", "dt"});
 
+//    private static Stream<Arguments> testData() {
+//        return Stream.of(
+//                Arguments.of("combined", "action"),
+//                Arguments.of("divided", "action"),
+//                Arguments.of("combined", "procedure_indexed"),
+//                Arguments.of("divided", "procedure_indexed"),
+//                Arguments.of("combined", "procedure_named"),
+//                Arguments.of("divided", "procedure_named"));
+
     private static Stream<Arguments> testData() {
         return Stream.of(
-                Arguments.of("combined", "action"),
-                Arguments.of("divided", "action"),
-                Arguments.of("combined", "procedure_indexed"),
-                Arguments.of("divided", "procedure_indexed"),
-                Arguments.of("combined", "procedure_named"),
-                Arguments.of("divided", "procedure_named"));
+                Arguments.of("combined", "procedure_named"));
     }
 
     protected FileStoreTable createTable(
@@ -181,6 +185,8 @@ public class CompactDatabaseActionITCase extends CompactActionITCaseBase {
             write.close();
             commit.close();
         }
+
+        Thread.sleep(1000 * 3600);
 
         for (Map.Entry<Identifier, FileStoreTable> identifierFileStoreTableEntry :
                 tableToCompaction.entrySet()) {

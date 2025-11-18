@@ -18,6 +18,7 @@
 
 package org.apache.paimon.flink.action;
 
+import org.apache.flink.configuration.RestOptions;
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogLoader;
@@ -77,7 +78,9 @@ public abstract class ActionBase implements Action, Serializable {
         initCatalog();
 
         // use the default env if user doesn't pass one
-        initFlinkEnv(StreamExecutionEnvironment.getExecutionEnvironment());
+        Configuration conf = new Configuration();
+        conf.setInteger(RestOptions.PORT, 8084);
+        initFlinkEnv(StreamExecutionEnvironment.getExecutionEnvironment(conf));
     }
 
     void initCatalog() {

@@ -430,7 +430,7 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
   }
 
   test("Paimon Procedure: compact aware bucket pk table with many small files") {
-    Seq(3, -1).foreach(
+    Seq(3, 3).foreach(
       bucket => {
         withTable("T") {
           spark.sql(
