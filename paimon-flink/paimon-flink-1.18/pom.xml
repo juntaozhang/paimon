@@ -36,6 +36,7 @@ under the License.
     <properties>
         <flink.version>1.18.1</flink.version>
         <iceberg.flink.version>1.18</iceberg.flink.version>
+        <flink.cdc.version>3.1.1</flink.cdc.version>
     </properties>
 
     <dependencies>

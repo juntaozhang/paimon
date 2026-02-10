@@ -37,6 +37,7 @@ under the License.
         <flink.version>1.17.2</flink.version>
         <iceberg.flink.version>1.17</iceberg.flink.version>
         <frocksdbjni.version>6.20.3-ververica-2.0</frocksdbjni.version>
+        <flink.cdc.version>3.1.1</flink.cdc.version>
     </properties>
 
     <dependencies>

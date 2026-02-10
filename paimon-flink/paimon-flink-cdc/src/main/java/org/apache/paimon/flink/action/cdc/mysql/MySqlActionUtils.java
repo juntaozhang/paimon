@@ -24,6 +24,7 @@ import org.apache.paimon.flink.action.cdc.TypeMapping;
 import org.apache.paimon.flink.action.cdc.schema.JdbcSchemaUtils;
 import org.apache.paimon.flink.action.cdc.schema.JdbcSchemasInfo;
 import org.apache.paimon.flink.action.cdc.serialization.CdcDebeziumDeserializationSchema;
+import org.apache.paimon.flink.action.cdc.shims.FlinkCdcShimLoader;
 import org.apache.paimon.flink.action.cdc.watermark.CdcTimestampExtractor;
 import org.apache.paimon.schema.Schema;
 
@@ -193,17 +194,9 @@ public class MySqlActionUtils {
                 .getOptional(MySqlSourceOptions.CHUNK_KEY_EVEN_DISTRIBUTION_FACTOR_UPPER_BOUND)
                 .ifPresent(sourceBuilder::distributionFactorUpper);
         mySqlConfig
-                .getOptional(MySqlSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_UNBOUNDED_CHUNK_FIRST)
-                .ifPresent(sourceBuilder::assignUnboundedChunkFirst);
-        mySqlConfig
                 .getOptional(MySqlSourceOptions.CHUNK_META_GROUP_SIZE)
                 .ifPresent(sourceBuilder::splitMetaGroupSize);
-        mySqlConfig
-                .getOptional(MySqlSourceOptions.PARSE_ONLINE_SCHEMA_CHANGES)
-                .ifPresent(sourceBuilder::parseOnLineSchemaChanges);
-        mySqlConfig
-                .getOptional(MySqlSourceOptions.USE_LEGACY_JSON_FORMAT)
-                .ifPresent(sourceBuilder::useLegacyJsonFormat);
+        FlinkCdcShimLoader.getShim().configureMySqlSource(mySqlConfig, sourceBuilder);
 
         String startupMode = mySqlConfig.get(MySqlSourceOptions.SCAN_STARTUP_MODE);
         // see

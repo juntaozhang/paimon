@@ -24,6 +24,7 @@ import org.apache.paimon.flink.action.cdc.TypeMapping;
 import org.apache.paimon.flink.action.cdc.schema.JdbcSchemaUtils;
 import org.apache.paimon.flink.action.cdc.schema.JdbcSchemasInfo;
 import org.apache.paimon.flink.action.cdc.serialization.CdcDebeziumDeserializationSchema;
+import org.apache.paimon.flink.action.cdc.shims.FlinkCdcShimLoader;
 import org.apache.paimon.options.OptionsUtils;
 import org.apache.paimon.schema.Schema;
 
@@ -155,11 +156,6 @@ public class PostgresActionUtils {
                 .getOptional(PostgresSourceOptions.SPLIT_KEY_EVEN_DISTRIBUTION_FACTOR_LOWER_BOUND)
                 .ifPresent(sourceBuilder::distributionFactorLower);
         postgresConfig
-                .getOptional(
-                        PostgresSourceOptions
-                                .SCAN_INCREMENTAL_SNAPSHOT_UNBOUNDED_CHUNK_FIRST_ENABLED)
-                .ifPresent(sourceBuilder::assignUnboundedChunkFirst);
-        postgresConfig
                 .getOptional(PostgresSourceOptions.SCAN_NEWLY_ADDED_TABLE_ENABLED)
                 .ifPresent(sourceBuilder::scanNewlyAddedTableEnabled);
         postgresConfig
@@ -180,6 +176,7 @@ public class PostgresActionUtils {
         postgresConfig
                 .getOptional(PostgresSourceOptions.SCAN_INCREMENTAL_SNAPSHOT_BACKFILL_SKIP)
                 .ifPresent(sourceBuilder::skipSnapshotBackfill);
+        FlinkCdcShimLoader.getShim().configurePostgresSource(postgresConfig, sourceBuilder);
 
         String startupMode = postgresConfig.get(PostgresSourceOptions.SCAN_STARTUP_MODE);
 
