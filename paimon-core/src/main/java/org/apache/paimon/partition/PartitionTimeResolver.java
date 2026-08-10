@@ -18,6 +18,8 @@
 
 package org.apache.paimon.partition;
 
+import org.apache.paimon.shade.org.threeten.extra.YearQuarter;
+
 import javax.annotation.Nullable;
 
 import java.text.ParsePosition;
@@ -26,30 +28,37 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.Period;
 import java.time.Year;
 import java.time.YearMonth;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.time.format.SignStyle;
 import java.time.temporal.ChronoField;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAccessor;
 import java.time.temporal.TemporalAmount;
 import java.time.temporal.TemporalField;
+import java.time.temporal.TemporalUnit;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
+import static java.time.temporal.ChronoField.YEAR;
+import static java.time.temporal.IsoFields.WEEK_BASED_YEAR;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
 /**
@@ -58,7 +67,7 @@ import static org.apache.paimon.utils.Preconditions.checkArgument;
  * values and {@link LocalDateTime}.
  */
 public class PartitionTimeResolver implements PartitionTimeResolvable {
-    private static final Map<Character, ChronoField> FIELD_MAP = new HashMap<>();
+    private static final Map<Character, TemporalField> FIELD_MAP = new HashMap<>();
     private final List<String> partitionKeys;
     private final String pattern;
     private final String formatter;
@@ -87,13 +96,36 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
     }
 
     static {
-        FIELD_MAP.put('y', ChronoField.YEAR);
-        FIELD_MAP.put('M', ChronoField.MONTH_OF_YEAR);
+        FIELD_MAP.put('G', ChronoField.ERA);
+        FIELD_MAP.put('y', YEAR);
+        FIELD_MAP.put('Y', WEEK_BASED_YEAR);
+        FIELD_MAP.put('u', YEAR);
+        FIELD_MAP.put('D', ChronoField.DAY_OF_YEAR);
+        FIELD_MAP.put('M', MONTH_OF_YEAR);
+        FIELD_MAP.put('L', MONTH_OF_YEAR);
         FIELD_MAP.put('d', ChronoField.DAY_OF_MONTH);
-        FIELD_MAP.put('H', ChronoField.HOUR_OF_DAY);
+        FIELD_MAP.put('w', ChronoField.ALIGNED_WEEK_OF_YEAR);
+        FIELD_MAP.put('W', ChronoField.ALIGNED_WEEK_OF_MONTH);
+        FIELD_MAP.put('E', ChronoField.DAY_OF_WEEK);
+        FIELD_MAP.put('e', ChronoField.DAY_OF_WEEK);
+        FIELD_MAP.put('c', ChronoField.DAY_OF_WEEK);
+        FIELD_MAP.put('Q', IsoFields.QUARTER_OF_YEAR);
+        FIELD_MAP.put('q', IsoFields.QUARTER_OF_YEAR);
+        FIELD_MAP.put('F', ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH);
+        FIELD_MAP.put('a', ChronoField.AMPM_OF_DAY);
         FIELD_MAP.put('h', ChronoField.CLOCK_HOUR_OF_AMPM);
+        FIELD_MAP.put('K', ChronoField.HOUR_OF_AMPM);
+        FIELD_MAP.put('k', ChronoField.CLOCK_HOUR_OF_DAY);
+        FIELD_MAP.put('H', ChronoField.HOUR_OF_DAY);
         FIELD_MAP.put('m', ChronoField.MINUTE_OF_HOUR);
         FIELD_MAP.put('s', ChronoField.SECOND_OF_MINUTE);
+        FIELD_MAP.put('S', ChronoField.NANO_OF_SECOND);
+        FIELD_MAP.put('A', ChronoField.MILLI_OF_DAY);
+        FIELD_MAP.put('n', ChronoField.NANO_OF_SECOND);
+        FIELD_MAP.put('N', ChronoField.NANO_OF_DAY);
+        FIELD_MAP.put('Z', ChronoField.OFFSET_SECONDS);
+        FIELD_MAP.put('X', ChronoField.OFFSET_SECONDS);
+        FIELD_MAP.put('x', ChronoField.OFFSET_SECONDS);
     }
 
     private void init() {
@@ -118,18 +150,34 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
      */
     @Override
     public TemporalAmount extractMinStep() {
-        List<TimeFieldToken> fieldTokens =
-                patternFormatMappings.values().stream()
-                        .flatMap(Collection::stream)
-                        .filter(token -> token instanceof TimeFieldToken)
-                        .map(token -> (TimeFieldToken) token)
-                        .collect(Collectors.toList());
-
-        Optional<TimeFieldToken> min =
-                fieldTokens.stream().min(Comparator.comparingInt(span -> span.field.ordinal()));
-        checkArgument(min.isPresent(), "No time unit found in variable ranges");
-        ChronoField field = min.get().field;
-        return stepOf(field);
+        TemporalAmount minStep = null;
+        Duration minDuration = null;
+        for (PatternToken patternToken : patternTokens) {
+            if (!patternToken.isVariable) {
+                continue;
+            }
+            List<FormatToken> tokens = patternFormatMappings.get(patternToken);
+            if (tokens == null || tokens.isEmpty()) {
+                continue;
+            }
+            for (FormatToken token : tokens) {
+                if (!(token instanceof TemporalFieldToken)) {
+                    continue;
+                }
+                TemporalFieldToken fieldToken = (TemporalFieldToken) token;
+                // Zone offset is not a time step; skip it.
+                if (fieldToken.isOffset()) {
+                    continue;
+                }
+                Duration duration = fieldToken.field.getBaseUnit().getDuration();
+                if (minDuration == null || duration.compareTo(minDuration) < 0) {
+                    minDuration = duration;
+                    minStep = stepOf(fieldToken);
+                }
+            }
+        }
+        checkArgument(minStep != null, "No time field found in pattern variables");
+        return minStep;
     }
 
     /**
@@ -138,6 +186,24 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
      */
     @Override
     public LinkedHashMap<String, String> resolvePartitionValues(LocalDateTime dateTime) {
+        return resolve(
+                dateTime,
+                (dt, tokens) ->
+                        tokens.stream()
+                                        .filter(t -> t instanceof TemporalFieldToken)
+                                        .anyMatch(t -> ((TemporalFieldToken) t).isOffset())
+                                ? dt.atOffset(ZoneOffset.UTC)
+                                : dt);
+    }
+
+    @Override
+    public LinkedHashMap<String, String> resolvePartitionValues(OffsetDateTime dateTime) {
+        return resolve(dateTime, (dt, tokens) -> dt);
+    }
+
+    private <T extends TemporalAccessor> LinkedHashMap<String, String> resolve(
+            T dateTime, BiFunction<T, List<FormatToken>, TemporalAccessor> converter) {
+
         LinkedHashMap<String, String> result = new LinkedHashMap<>();
         for (PatternToken patternToken : patternTokens) {
             if (!patternToken.isVariable) {
@@ -147,9 +213,9 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
             List<FormatToken> tokens = patternFormatMappings.get(patternToken);
             int start = tokens.get(0).start;
             int end = tokens.get(tokens.size() - 1).end;
-            DateTimeFormatter dateTimeFormatter =
+            DateTimeFormatter fmt =
                     DateTimeFormatter.ofPattern(formatter.substring(start, end), Locale.ROOT);
-            result.put(variableName, dateTime.format(dateTimeFormatter));
+            result.put(variableName, fmt.format(converter.apply(dateTime, tokens)));
         }
         return result;
     }
@@ -160,25 +226,30 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
                 buildTimestampString(partitionKeys, partitionValues, patternTokens);
         DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(formatter, Locale.ROOT);
 
-        Set<ChronoField> fields =
+        Set<TemporalField> fieldSet =
                 formatTokens.stream()
-                        .filter(t -> t instanceof TimeFieldToken)
-                        .map(t -> ((TimeFieldToken) t).field)
+                        .filter(t -> t instanceof TemporalFieldToken)
+                        .map(t -> ((TemporalFieldToken) t).field)
                         .collect(Collectors.toSet());
+        Set<TemporalUnit> units =
+                fieldSet.stream().map(TemporalField::getBaseUnit).collect(Collectors.toSet());
 
-        if (fields.contains(ChronoField.HOUR_OF_DAY)
-                || fields.contains(ChronoField.CLOCK_HOUR_OF_AMPM)
-                || fields.contains(ChronoField.MINUTE_OF_HOUR)
-                || fields.contains(ChronoField.SECOND_OF_MINUTE)) {
+        if (fieldSet.contains(ChronoField.OFFSET_SECONDS)) {
+            return OffsetDateTime.parse(timestampString, dateTimeFormatter).toLocalDateTime();
+        }
+        if (units.stream().anyMatch(TemporalUnit::isTimeBased)) {
             return LocalDateTime.parse(timestampString, dateTimeFormatter);
         }
-        if (fields.contains(ChronoField.DAY_OF_MONTH)) {
+        if (units.contains(ChronoUnit.DAYS) || units.contains(ChronoUnit.WEEKS)) {
             return LocalDate.parse(timestampString, dateTimeFormatter).atStartOfDay();
         }
-        if (fields.contains(ChronoField.MONTH_OF_YEAR)) {
+        if (units.contains(ChronoUnit.MONTHS)) {
             return YearMonth.parse(timestampString, dateTimeFormatter).atDay(1).atStartOfDay();
         }
-        if (fields.contains(ChronoField.YEAR)) {
+        if (units.contains(IsoFields.QUARTER_YEARS)) {
+            return YearQuarter.parse(timestampString, dateTimeFormatter).atDay(1).atStartOfDay();
+        }
+        if (units.contains(ChronoUnit.YEARS) || units.contains(IsoFields.WEEK_BASED_YEARS)) {
             return Year.parse(timestampString, dateTimeFormatter)
                     .atMonth(1)
                     .atDay(1)
@@ -221,8 +292,8 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
                 while (pos < formatter.length() && formatter.charAt(pos) == c) {
                     pos++;
                 }
-                ChronoField field = FIELD_MAP.get(c);
-                tokens.add(new TimeFieldToken(field, start, pos));
+                TemporalField field = FIELD_MAP.get(c);
+                tokens.add(new TemporalFieldToken(c, field, start, pos));
                 pos--;
             } else if (c == '\'') {
                 // parse literals
@@ -338,11 +409,6 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
                     matchedEndIdx = formatEndIdx;
                 }
             } else {
-                // Literal pattern tokens match 1...len consecutive format tokens, split by token
-                // length
-                if (minFormattedLength(formatIdx, formatEndIdx) > patternToken.token.length()) {
-                    continue;
-                }
                 if (matchLiteral(patternToken.token, formatIdx, formatEndIdx)) {
                     if (matchRecursive(patternIdx + 1, formatEndIdx)) {
                         return true;
@@ -362,10 +428,14 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
         StringBuilder subFormatter = new StringBuilder();
         StringBuilder literalValue = new StringBuilder();
         boolean pureLiteral = true;
+        List<TemporalField> fields = new ArrayList<>();
         for (int i = startIdx; i < endIdx; i++) {
             FormatToken token = formatTokens.get(i);
             subFormatter.append(formatter, token.start, token.end);
             pureLiteral = pureLiteral && token instanceof LiteralToken;
+            if (token instanceof TemporalFieldToken) {
+                fields.add(((TemporalFieldToken) (token)).field);
+            }
             if (pureLiteral) {
                 literalValue.append(((LiteralToken) token).token);
             }
@@ -382,7 +452,7 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
             if (pp.getErrorIndex() >= 0 || pp.getIndex() != literalToken.length()) {
                 return false;
             }
-            for (TemporalField field : FIELD_MAP.values()) {
+            for (TemporalField field : fields) {
                 if (ta.isSupported(field)) {
                     try {
                         ta.get(field);
@@ -397,45 +467,21 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
         return true;
     }
 
-    /** Minimum formatted length of the given format-token range; used to prune literal matches. */
-    private int minFormattedLength(int startIdx, int endIdx) {
-        int length = 0;
-        for (int i = startIdx; i < endIdx; i++) {
-            FormatToken token = formatTokens.get(i);
-            if (token instanceof TimeFieldToken) {
-                TimeFieldToken t = (TimeFieldToken) token;
-                // Text month forms (MMMM/MMMMM) output variable-length strings whose length
-                // depends on the month value and locale. For example, MMMM outputs "May" (3) in
-                // English but "五月" (2) in Chinese; MMMMM can output a single character.
-                // Use a conservative lower bound of 1 to avoid pruning valid matches.
-                if (t.field == ChronoField.MONTH_OF_YEAR && token.getLength() >= 3) {
-                    length += 1;
-                    continue;
-                }
-            }
-            length += token.getLength();
+    private static TemporalAmount stepOf(TemporalFieldToken fieldToken) {
+        TemporalUnit unit = fieldToken.field.getBaseUnit();
+        if (unit == ChronoUnit.YEARS || unit == IsoFields.WEEK_BASED_YEARS) {
+            return Period.ofYears(1);
         }
-        return length;
-    }
-
-    private static TemporalAmount stepOf(ChronoField field) {
-        switch (field) {
-            case SECOND_OF_MINUTE:
-                return Duration.ofSeconds(1);
-            case MINUTE_OF_HOUR:
-                return Duration.ofMinutes(1);
-            case HOUR_OF_DAY:
-            case CLOCK_HOUR_OF_AMPM:
-                return Duration.ofHours(1);
-            case DAY_OF_MONTH:
-                return Duration.ofDays(1);
-            case MONTH_OF_YEAR:
-                return Period.ofMonths(1);
-            case YEAR:
-                return Period.ofYears(1);
-            default:
-                throw new IllegalStateException("Unsupported field: " + field);
+        if (unit == ChronoUnit.MONTHS) {
+            return Period.ofMonths(1);
         }
+        if (unit == IsoFields.QUARTER_YEARS) {
+            return Period.ofMonths(3);
+        }
+        if (unit == ChronoUnit.NANOS) {
+            return Duration.ofNanos((long) Math.pow(10, 9 - fieldToken.getLength()));
+        }
+        return unit.getDuration();
     }
 
     private static class FormatToken {
@@ -471,17 +517,25 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
         }
     }
 
-    private static class TimeFieldToken extends FormatToken {
-        final ChronoField field;
+    private static class TemporalFieldToken extends FormatToken {
+        final char letter;
+        final TemporalField field;
 
-        TimeFieldToken(ChronoField field, int start, int end) {
+        TemporalFieldToken(char letter, TemporalField field, int start, int end) {
             super(start, end);
+            this.letter = letter;
             this.field = field;
+        }
+
+        boolean isOffset() {
+            return letter == 'Z' || letter == 'X' || letter == 'x';
         }
 
         @Override
         public String toString() {
-            return String.format("TimeFieldToken{field=%s, start=%d, end=%d}", field, start, end);
+            return String.format(
+                    "TimeFieldToken{letter=%s, field=%s, start=%d, end=%d}",
+                    letter, field, start, end);
         }
     }
 
@@ -508,9 +562,9 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
     private static class FallbackPartitionTimeResolver implements PartitionTimeResolvable {
         private static final DateTimeFormatter TIMESTAMP_FORMATTER =
                 new DateTimeFormatterBuilder()
-                        .appendValue(ChronoField.YEAR, 1, 10, SignStyle.NORMAL)
+                        .appendValue(YEAR, 1, 10, SignStyle.NORMAL)
                         .appendLiteral('-')
-                        .appendValue(ChronoField.MONTH_OF_YEAR, 1, 2, SignStyle.NORMAL)
+                        .appendValue(MONTH_OF_YEAR, 1, 2, SignStyle.NORMAL)
                         .appendLiteral('-')
                         .appendValue(ChronoField.DAY_OF_MONTH, 1, 2, SignStyle.NORMAL)
                         .optionalStart()
@@ -529,9 +583,9 @@ public class PartitionTimeResolver implements PartitionTimeResolvable {
 
         private static final DateTimeFormatter DATE_FORMATTER =
                 new DateTimeFormatterBuilder()
-                        .appendValue(ChronoField.YEAR, 1, 10, SignStyle.NORMAL)
+                        .appendValue(YEAR, 1, 10, SignStyle.NORMAL)
                         .appendLiteral('-')
-                        .appendValue(ChronoField.MONTH_OF_YEAR, 1, 2, SignStyle.NORMAL)
+                        .appendValue(MONTH_OF_YEAR, 1, 2, SignStyle.NORMAL)
                         .appendLiteral('-')
                         .appendValue(ChronoField.DAY_OF_MONTH, 1, 2, SignStyle.NORMAL)
                         .toFormatter()

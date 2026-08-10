@@ -20,6 +20,7 @@ package org.apache.paimon.partition;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.temporal.TemporalAmount;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,6 +42,11 @@ public interface PartitionTimeResolvable extends Serializable {
 
     /** Formats a {@link LocalDateTime} into partition column values. */
     default LinkedHashMap<String, String> resolvePartitionValues(LocalDateTime dateTime) {
+        throw new UnsupportedOperationException(
+                "resolvePartitionValues is not supported by this resolver");
+    }
+
+    default LinkedHashMap<String, String> resolvePartitionValues(OffsetDateTime dateTime) {
         throw new UnsupportedOperationException(
                 "resolvePartitionValues is not supported by this resolver");
     }

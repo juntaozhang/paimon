@@ -36,8 +36,12 @@ import org.assertj.core.util.Lists;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.Period;
+import java.time.ZoneOffset;
 import java.time.temporal.TemporalAmount;
 import java.util.Arrays;
 import java.util.List;
@@ -72,7 +76,7 @@ public class PartitionTimeResolverTest {
     }
 
     @Test
-    public void testExtractMinStepWithDuration() {
+    public void testExtractMinStep() {
         assertThat(extractMinStep("$y$M$d$H$m$s", "yyyyMMddHHmmss", "y", "M", "d", "H", "m", "s"))
                 .isEqualTo(Duration.ofSeconds(1));
         assertThat(extractMinStep("$y$M$d $H$m$s", "yyyyMMdd HHmmss", "y", "M", "d", "H", "m", "s"))
@@ -167,15 +171,27 @@ public class PartitionTimeResolverTest {
                                 "$hour:00:00 $date", "HH:mm:ss yyyyMMdd", "date", "extra", "hour"))
                 .isEqualTo(Duration.ofHours(1));
 
-        assertThatThrownBy(() -> extractMinStep("$dt", "yyyyMMddHHmmssSSS", "dt"))
-                .satisfies(
-                        PaimonAssertions.anyCauseMatches(
-                                IllegalArgumentException.class,
-                                "Unsupported formatter pattern letter 'S' in formatter: yyyyMMddHHmmssSSS."));
-    }
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssS", "dt"))
+                .isEqualTo(Duration.ofNanos(100_000_000));
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssSSS", "dt"))
+                .isEqualTo(Duration.ofNanos(1_000_000));
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssSSSSSS", "dt"))
+                .isEqualTo(Duration.ofNanos(1_000));
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssSSSSSSSSS", "dt"))
+                .isEqualTo(Duration.ofNanos(1));
 
-    @Test
-    public void testExtractMinStepWithPeriod() {
+        assertThat(extractMinStep("$dt", "yyyy-DDD", "dt")).isEqualTo(Duration.ofDays(1));
+        assertThat(extractMinStep("$dt", "yyyy-QQQ", "dt")).isEqualTo(Period.ofMonths(3));
+        assertThat(extractMinStep("$dt", "YYYY-'W'ww-e", "dt")).isEqualTo(Duration.ofDays(1));
+        assertThat(extractMinStep("$dt", "yyyyMMdd hh a", "dt")).isEqualTo(Duration.ofHours(1));
+
+        // Zone offset is not a time step; the minimum step should come from the other fields.
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssZ", "dt")).isEqualTo(Duration.ofSeconds(1));
+        assertThat(extractMinStep("$dt $offset", "yyyyMMddHHmmss Z", "dt", "offset"))
+                .isEqualTo(Duration.ofSeconds(1));
+        assertThat(extractMinStep("$dt", "yyyyMMddHHmmssXXX", "dt"))
+                .isEqualTo(Duration.ofSeconds(1));
+
         assertThat(extractMinStep("$a-01-$b", "yyyy-MM-dd", "a", "b"))
                 .isEqualTo(Duration.ofDays(1));
         assertThat(extractMinStep("$a-01", "yyyy-MM-dd", "a")).isEqualTo(Period.ofMonths(1));
@@ -253,6 +269,46 @@ public class PartitionTimeResolverTest {
                                 "yyyy-MM-dd HH:mm:ss")
                         .resolvePartitionValues(LocalDateTime.of(2023, 1, 1, 10, 0, 0));
         assertEquals(ImmutableMap.of("dt", "2023-01-01", "hour", "10"), partitionValues);
+
+        // Special DateTimeFormatter patterns.
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyy-DDD")
+                        .resolvePartitionValues(LocalDateTime.of(2026, 8, 10, 15, 30, 0));
+        assertEquals(ImmutableMap.of("dt", "2026-222"), partitionValues);
+
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyy-QQQ")
+                        .resolvePartitionValues(LocalDateTime.of(2026, 8, 10, 0, 0, 0));
+        assertEquals(ImmutableMap.of("dt", "2026-Q3"), partitionValues);
+
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "YYYY-'W'ww-e")
+                        .resolvePartitionValues(LocalDateTime.of(2026, 8, 9, 0, 0, 0));
+        assertEquals(ImmutableMap.of("dt", "2026-W33-1"), partitionValues);
+
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMdd hh a")
+                        .resolvePartitionValues(LocalDateTime.of(2026, 1, 2, 22, 0, 0));
+        assertEquals(ImmutableMap.of("dt", "20260102 10 PM"), partitionValues);
+
+        // Zone offset pattern 'Z': formatting uses UTC as the default offset.
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMddHHmmssZ")
+                        .resolvePartitionValues(LocalDateTime.of(2023, 1, 1, 12, 0, 0, 0));
+        assertEquals(ImmutableMap.of("dt", "20230101120000+0000"), partitionValues);
+
+        partitionValues =
+                new PartitionTimeResolver(
+                                Arrays.asList("dt", "offset"), "$dt $offset", "yyyyMMddHHmmss Z")
+                        .resolvePartitionValues(
+                                OffsetDateTime.of(2023, 1, 1, 12, 0, 0, 0, ZoneOffset.ofHours(8)));
+        assertEquals(ImmutableMap.of("dt", "20230101120000", "offset", "+0800"), partitionValues);
+
+        partitionValues =
+                new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMddHHmmssXXX")
+                        .resolvePartitionValues(
+                                OffsetDateTime.of(2023, 1, 1, 12, 0, 0, 0, ZoneOffset.ofHours(8)));
+        assertEquals(ImmutableMap.of("dt", "20230101120000+08:00"), partitionValues);
     }
 
     @Test
@@ -395,6 +451,41 @@ public class PartitionTimeResolverTest {
                         "yyyy-MM-dd HH:mm:ss");
         assertThat(resolver.parsePartitionValues(Arrays.asList("10", "2023-01-01", "30")))
                 .isEqualTo(LocalDateTime.parse("2023-01-01T10:30:00"));
+
+        resolver = new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyy-DDD");
+        assertThat(resolver.parsePartitionValues(Arrays.asList("2026-218")))
+                .isEqualTo(LocalDateTime.of(LocalDate.ofYearDay(2026, 218), LocalTime.MIN));
+
+        assertThat(
+                        new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyy-QQQ")
+                                .parsePartitionValues(Arrays.asList("2026-Q2")))
+                .isEqualTo(LocalDateTime.parse("2026-04-01T00:00:00"));
+
+        assertThat(
+                        new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "YYYY-'W'ww-e")
+                                .parsePartitionValues(Arrays.asList("2026-W33-1")))
+                .isEqualTo(LocalDateTime.parse("2026-08-09T00:00:00"));
+
+        assertThat(
+                        new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMdd hh a")
+                                .parsePartitionValues(Arrays.asList("20260102 10 PM")))
+                .isEqualTo(LocalDateTime.parse("2026-01-02T22:00:00"));
+
+        // Zone offset pattern 'Z': parsing extracts the local date-time at the given offset.
+        resolver = new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMddHHmmssZ");
+        assertThat(resolver.parsePartitionValues(Arrays.asList("20230101120000+0800")))
+                .isEqualTo(LocalDateTime.parse("2023-01-01T12:00:00"));
+
+        resolver =
+                new PartitionTimeResolver(
+                        Arrays.asList("dt", "offset"), "$dt $offset", "yyyyMMddHHmmss Z");
+        assertThat(resolver.parsePartitionValues(Arrays.asList("20230101120000", "+0800")))
+                .isEqualTo(LocalDateTime.parse("2023-01-01T12:00:00"));
+
+        // ISO offset pattern 'XXX' (with colon).
+        resolver = new PartitionTimeResolver(Arrays.asList("dt"), "$dt", "yyyyMMddHHmmssXXX");
+        assertThat(resolver.parsePartitionValues(Arrays.asList("20230101120000+08:00")))
+                .isEqualTo(LocalDateTime.parse("2023-01-01T12:00:00"));
     }
 
     @Test
